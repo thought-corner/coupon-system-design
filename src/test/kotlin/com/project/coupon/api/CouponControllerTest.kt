@@ -50,15 +50,35 @@ class CouponControllerTest(
 		saved.createdAt shouldBe FixedClockConfiguration.NOW
 	}
 
-	test("총수량·유효일수를 주면 그 값으로 저장된다") {
+	context("총수량·유효일수는 10,000매·7일 고정이라 요청에 담으면 400 INVALID_COUPON 으로 거절되고 저장되지 않는다") {
+		listOf(
+			"총수량" to """{"name":"가을 할인","totalQuantity":10000}""",
+			"유효일수" to """{"name":"가을 할인","validityDays":7}""",
+		).forEach { (field, body) ->
+			test("$field 를 고정값과 같은 값으로 보내도 거절된다") {
+				mockMvc.post("/api/coupons") {
+					contentType = MediaType.APPLICATION_JSON
+					content = body
+				}.andExpect {
+					status { isBadRequest() }
+					jsonPath("$.code") { value("INVALID_COUPON") }
+				}
+
+				couponRepository.count() shouldBe 0
+			}
+		}
+	}
+
+	test("이름이 공백뿐이면 400 INVALID_COUPON 으로 거절되고 저장되지 않는다") {
 		mockMvc.post("/api/coupons") {
 			contentType = MediaType.APPLICATION_JSON
-			content = """{"name":"한정판","totalQuantity":100,"validityDays":3}"""
+			content = """{"name":" "}"""
 		}.andExpect {
-			status { isCreated() }
-			jsonPath("$.totalQuantity") { value(100) }
-			jsonPath("$.validityDays") { value(3) }
+			status { isBadRequest() }
+			jsonPath("$.code") { value("INVALID_COUPON") }
 		}
+
+		couponRepository.count() shouldBe 0
 	}
 
 	context("발급") {
@@ -122,6 +142,16 @@ class CouponControllerTest(
 			}
 
 			couponRepository.findById(couponId).get().issuedQuantity shouldBe 1
+		}
+
+		test("이미 발급받은 사용자가 매진 뒤에 다시 요청하면 SOLD_OUT 이 아니라 409 ALREADY_ISSUED 로 거절된다") {
+			val couponId = createCoupon(totalQuantity = 1)
+			issue(couponId, userId = 42).andExpect { status { isOk() } }
+
+			issue(couponId, userId = 42).andExpect {
+				status { isConflict() }
+				jsonPath("$.code") { value("ALREADY_ISSUED") }
+			}
 		}
 	}
 })
