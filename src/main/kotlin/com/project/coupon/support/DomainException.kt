@@ -8,6 +8,9 @@ sealed class DomainException(
 	message: String,
 ) : RuntimeException(message)
 
+class InvalidCouponException(message: String) :
+	DomainException("INVALID_COUPON", HttpStatus.BAD_REQUEST, message)
+
 class CouponNotFoundException(message: String = "쿠폰 행사를 찾을 수 없습니다") :
 	DomainException("COUPON_NOT_FOUND", HttpStatus.NOT_FOUND, message)
 
