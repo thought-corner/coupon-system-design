@@ -4,12 +4,9 @@ import com.project.coupon.api.dto.CreateCouponRequest
 import com.project.coupon.domain.Coupon
 import com.project.coupon.domain.CouponRepository
 import com.project.coupon.domain.Issuance
-import com.project.coupon.domain.IssuanceRepository
 import com.project.coupon.support.AlreadyIssuedException
-import com.project.coupon.support.CouponNotFoundException
 import com.project.coupon.support.InvalidCouponException
 import com.project.coupon.support.SoldOutException
-import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Clock
@@ -18,7 +15,9 @@ import java.time.LocalDateTime
 @Service
 class CouponService(
 	private val couponRepository: CouponRepository,
-	private val issuanceRepository: IssuanceRepository,
+	private val issuanceGate: IssuanceGate,
+	private val gateSeedReader: GateSeedReader,
+	private val issuanceWriter: IssuanceWriter,
 	private val clock: Clock,
 ) {
 
@@ -30,33 +29,43 @@ class CouponService(
 		return couponRepository.save(Coupon.create(request.name, LocalDateTime.now(clock)))
 	}
 
-	@Transactional
 	fun issue(couponId: Long, userId: Long): Issuance {
-		val coupon = couponRepository.findByIdForUpdate(couponId)
-			?: throw CouponNotFoundException()
-
-		if (issuanceRepository.existsByUserIdAndCouponId(userId, couponId)) {
-			throw AlreadyIssuedException()
+		passGate(couponId, userId)
+		return try {
+			issuanceWriter.write(couponId, userId)
+		} catch (e: Exception) {
+			undoGatePass(couponId, userId, e)
 		}
-		if (coupon.isSoldOut()) {
-			throw SoldOutException()
-		}
+	}
 
-		val now = LocalDateTime.now(clock)
-		val issuance = try {
-			issuanceRepository.save(
-				Issuance(
-					userId = userId,
-					couponId = couponId,
-					issuedAt = now,
-					expiresAt = now.plusDays(coupon.validityDays.toLong()),
-				)
-			)
-		} catch (e: DataIntegrityViolationException) {
-			throw AlreadyIssuedException()
+	private fun passGate(couponId: Long, userId: Long) {
+		var result = issuanceGate.tryPass(couponId, userId)
+		if (result == GateResult.NOT_INITIALIZED) {
+			initializeGate(couponId)
+			result = issuanceGate.tryPass(couponId, userId)
 		}
 
-		coupon.issuedQuantity++
-		return issuance
+		when (result) {
+			GateResult.PASSED -> Unit
+			GateResult.SOLD_OUT -> throw SoldOutException()
+			GateResult.DUPLICATE -> throw AlreadyIssuedException()
+			GateResult.NOT_INITIALIZED -> error("문지기를 초기화한 직후에도 재고 키가 없습니다")
+		}
+	}
+
+	private fun initializeGate(couponId: Long) {
+		val seed = gateSeedReader.read(couponId)
+		issuanceGate.initialize(couponId, seed.remaining, seed.issuedUserIds)
+	}
+
+	private fun undoGatePass(couponId: Long, userId: Long, cause: Exception): Nothing {
+		runCatching {
+			when (cause) {
+				is AlreadyIssuedException -> issuanceGate.restoreStock(couponId)
+				is SoldOutException -> issuanceGate.markSoldOut(couponId, userId)
+				else -> issuanceGate.release(couponId, userId)
+			}
+		}.onFailure(cause::addSuppressed)
+		throw cause
 	}
 }
