@@ -7,11 +7,13 @@ import com.project.coupon.domain.CouponRepository
 import com.project.coupon.domain.IssuanceRepository
 import com.project.coupon.runConcurrently
 import io.kotest.assertions.assertSoftly
+import io.kotest.assertions.nondeterministic.eventually
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.context.annotation.Import
+import kotlin.time.Duration.Companion.seconds
 
 @SpringBootTest
 @Import(TestcontainersConfiguration::class, FixedClockConfiguration::class)
@@ -36,7 +38,7 @@ class CouponIssueConcurrencyTest(
 			)
 		).id.shouldNotBeNull()
 
-	// 결과마다 성공이면 null, 실패면 그 예외
+	// 결과마다 접수 성공이면 null, 거절이면 그 예외 — DB 반영은 비동기라 단언은 eventually 로 기다린다
 	fun issueConcurrently(userIds: List<Long>, couponId: Long, threads: Int = userIds.size): List<Throwable?> =
 		runConcurrently(userIds, threads) { userId -> couponService.issue(couponId, userId) }
 			.map { it.exceptionOrNull() }
@@ -51,8 +53,12 @@ class CouponIssueConcurrencyTest(
 		assertSoftly {
 			results.count { it == null } shouldBe 10
 			results.filterNotNull().map { it::class.simpleName }.toSet() shouldBe setOf("SoldOutException")
-			issuanceRepository.count() shouldBe 10
-			issuedQuantity(couponId) shouldBe 10
+		}
+		eventually(30.seconds) {
+			assertSoftly {
+				issuanceRepository.count() shouldBe 10
+				issuedQuantity(couponId) shouldBe 10
+			}
 		}
 	}
 
@@ -65,8 +71,12 @@ class CouponIssueConcurrencyTest(
 			results.size shouldBe 5_000
 			results.count { it == null } shouldBe 1_000
 			results.filterNotNull().map { it::class.simpleName }.toSet() shouldBe setOf("SoldOutException")
-			issuanceRepository.count() shouldBe 1_000
-			issuedQuantity(couponId) shouldBe 1_000
+		}
+		eventually(30.seconds) {
+			assertSoftly {
+				issuanceRepository.count() shouldBe 1_000
+				issuedQuantity(couponId) shouldBe 1_000
+			}
 		}
 	}
 
@@ -78,8 +88,12 @@ class CouponIssueConcurrencyTest(
 		assertSoftly {
 			results.count { it == null } shouldBe 1
 			results.filterNotNull().map { it::class.simpleName }.toSet() shouldBe setOf("AlreadyIssuedException")
-			issuanceRepository.count() shouldBe 1
-			issuedQuantity(couponId) shouldBe 1
+		}
+		eventually(30.seconds) {
+			assertSoftly {
+				issuanceRepository.count() shouldBe 1
+				issuedQuantity(couponId) shouldBe 1
+			}
 		}
 	}
 })

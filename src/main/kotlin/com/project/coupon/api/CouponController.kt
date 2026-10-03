@@ -2,7 +2,7 @@ package com.project.coupon.api
 
 import com.project.coupon.api.dto.CouponResponse
 import com.project.coupon.api.dto.CreateCouponRequest
-import com.project.coupon.api.dto.IssuanceResponse
+import com.project.coupon.api.dto.IssuanceAcceptedResponse
 import com.project.coupon.application.CouponService
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -29,8 +29,8 @@ class CouponController(
 	fun issue(
 		@PathVariable couponId: Long,
 		@RequestHeader("X-User-Id") userId: Long,
-	): IssuanceResponse {
-		val issuance = couponService.issue(couponId, userId)
-		return IssuanceResponse.from(issuance)
+	): ResponseEntity<IssuanceAcceptedResponse> {
+		couponService.issue(couponId, userId)
+		return ResponseEntity.status(HttpStatus.ACCEPTED).body(IssuanceAcceptedResponse(couponId = couponId, userId = userId))
 	}
 }

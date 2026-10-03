@@ -16,3 +16,6 @@ spring:
   mvc:
     problemdetails:
       enabled: true
+  task:
+    execution:
+      mode: force
