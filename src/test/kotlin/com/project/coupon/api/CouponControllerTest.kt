@@ -5,6 +5,8 @@ import com.project.coupon.TestcontainersConfiguration
 import com.project.coupon.domain.Coupon
 import com.project.coupon.domain.CouponRepository
 import com.project.coupon.domain.IssuanceRepository
+import io.kotest.assertions.assertSoftly
+import io.kotest.assertions.nondeterministic.eventually
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -14,6 +16,8 @@ import org.springframework.context.annotation.Import
 import org.springframework.http.MediaType
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.post
+import java.time.LocalDateTime
+import kotlin.time.Duration.Companion.seconds
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -95,21 +99,25 @@ class CouponControllerTest(
 		fun issue(couponId: Long, userId: Long) =
 			mockMvc.post("/api/coupons/$couponId/issue") { header("X-User-Id", userId) }
 
-		test("발급에 성공하면 ISSUED·발급 시각·만료 시각(발급 시각 + 유효일수)을 가진 발급 내역이 반환되고 발급 수량이 1 증가한다") {
+		test("발급을 요청하면 202 PENDING 으로 접수되고, 비동기로 발급 시각·만료 시각(발급 시각 + 유효일수)을 가진 발급 내역이 저장되며 발급 수량이 1 증가한다") {
 			val couponId = createCoupon(validityDays = 3)
 
 			issue(couponId, userId = 42).andExpect {
-				status { isOk() }
+				status { isAccepted() }
 				jsonPath("$.userId") { value(42) }
 				jsonPath("$.couponId") { value(couponId) }
-				jsonPath("$.status") { value("ISSUED") }
-				jsonPath("$.issuedAt") { value("2026-10-03T10:00:00") }
-				jsonPath("$.expiresAt") { value("2026-10-06T10:00:00") }
-				jsonPath("$.usedAt") { value(null) }
+				jsonPath("$.status") { value("PENDING") }
 			}
 
-			couponRepository.findById(couponId).get().issuedQuantity shouldBe 1
-			issuanceRepository.existsByUserIdAndCouponId(42, couponId) shouldBe true
+			eventually(5.seconds) {
+				val issuance = issuanceRepository.findAll().single()
+				assertSoftly {
+					issuance.userId shouldBe 42
+					issuance.issuedAt shouldBe LocalDateTime.parse("2026-10-03T10:00:00")
+					issuance.expiresAt shouldBe LocalDateTime.parse("2026-10-06T10:00:00")
+					couponRepository.findById(couponId).get().issuedQuantity shouldBe 1
+				}
+			}
 		}
 
 		test("존재하지 않는 행사에 발급을 요청하면 404 COUPON_NOT_FOUND 로 거절된다") {
@@ -121,37 +129,39 @@ class CouponControllerTest(
 
 		test("발급 수량이 총수량에 도달한 행사에 발급을 요청하면 409 SOLD_OUT 으로 거절되고 발급 수량은 그대로다") {
 			val couponId = createCoupon(totalQuantity = 1)
-			issue(couponId, userId = 1).andExpect { status { isOk() } }
+			issue(couponId, userId = 1).andExpect { status { isAccepted() } }
 
 			issue(couponId, userId = 2).andExpect {
 				status { isConflict() }
 				jsonPath("$.code") { value("SOLD_OUT") }
 			}
 
-			couponRepository.findById(couponId).get().issuedQuantity shouldBe 1
+			eventually(5.seconds) { couponRepository.findById(couponId).get().issuedQuantity shouldBe 1 }
 			issuanceRepository.existsByUserIdAndCouponId(2, couponId) shouldBe false
 		}
 
 		test("이미 발급받은 사용자가 같은 행사에 다시 요청하면 409 ALREADY_ISSUED 로 거절되고 발급 수량은 그대로다") {
 			val couponId = createCoupon()
-			issue(couponId, userId = 42).andExpect { status { isOk() } }
+			issue(couponId, userId = 42).andExpect { status { isAccepted() } }
 
 			issue(couponId, userId = 42).andExpect {
 				status { isConflict() }
 				jsonPath("$.code") { value("ALREADY_ISSUED") }
 			}
 
-			couponRepository.findById(couponId).get().issuedQuantity shouldBe 1
+			eventually(5.seconds) { couponRepository.findById(couponId).get().issuedQuantity shouldBe 1 }
 		}
 
 		test("이미 발급받은 사용자가 매진 뒤에 다시 요청하면 SOLD_OUT 이 아니라 409 ALREADY_ISSUED 로 거절된다") {
 			val couponId = createCoupon(totalQuantity = 1)
-			issue(couponId, userId = 42).andExpect { status { isOk() } }
+			issue(couponId, userId = 42).andExpect { status { isAccepted() } }
 
 			issue(couponId, userId = 42).andExpect {
 				status { isConflict() }
 				jsonPath("$.code") { value("ALREADY_ISSUED") }
 			}
+
+			eventually(5.seconds) { couponRepository.findById(couponId).get().issuedQuantity shouldBe 1 }
 		}
 	}
 })

@@ -3,10 +3,13 @@ package com.project.coupon.application
 import com.project.coupon.api.dto.CreateCouponRequest
 import com.project.coupon.domain.Coupon
 import com.project.coupon.domain.CouponRepository
-import com.project.coupon.domain.Issuance
 import com.project.coupon.support.AlreadyIssuedException
 import com.project.coupon.support.InvalidCouponException
+import com.project.coupon.support.IssuanceBusyException
 import com.project.coupon.support.SoldOutException
+import org.slf4j.LoggerFactory
+import org.springframework.context.ApplicationEventPublisher
+import org.springframework.core.task.TaskRejectedException
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Clock
@@ -17,7 +20,7 @@ class CouponService(
 	private val couponRepository: CouponRepository,
 	private val issuanceGate: IssuanceGate,
 	private val gateSeedReader: GateSeedReader,
-	private val issuanceWriter: IssuanceWriter,
+	private val eventPublisher: ApplicationEventPublisher,
 	private val clock: Clock,
 ) {
 
@@ -29,12 +32,19 @@ class CouponService(
 		return couponRepository.save(Coupon.create(request.name, LocalDateTime.now(clock)))
 	}
 
-	fun issue(couponId: Long, userId: Long): Issuance {
+	fun issue(couponId: Long, userId: Long) {
 		passGate(couponId, userId)
-		return try {
-			issuanceWriter.write(couponId, userId)
+		try {
+			eventPublisher.publishEvent(IssuanceRequested(couponId, userId))
 		} catch (e: Exception) {
-			undoGatePass(couponId, userId, e)
+			runCatching { issuanceGate.release(couponId, userId) }.onFailure {
+				e.addSuppressed(it)
+				log.error("선점 해제 실패 — Redis 재고 누수 couponId={} userId={}", couponId, userId, it)
+			}
+			if (e is TaskRejectedException) {
+				throw IssuanceBusyException()
+			}
+			throw e
 		}
 	}
 
@@ -58,14 +68,7 @@ class CouponService(
 		issuanceGate.initialize(couponId, seed.remaining, seed.issuedUserIds)
 	}
 
-	private fun undoGatePass(couponId: Long, userId: Long, cause: Exception): Nothing {
-		runCatching {
-			when (cause) {
-				is AlreadyIssuedException -> issuanceGate.restoreStock(couponId)
-				is SoldOutException -> issuanceGate.markSoldOut(couponId, userId)
-				else -> issuanceGate.release(couponId, userId)
-			}
-		}.onFailure(cause::addSuppressed)
-		throw cause
+	companion object {
+		private val log = LoggerFactory.getLogger(CouponService::class.java)
 	}
 }

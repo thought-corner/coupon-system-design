@@ -31,3 +31,6 @@ class AlreadyUsedException(message: String = "이미 사용된 쿠폰입니다")
 
 class ExpiredException(message: String = "유효기간이 만료된 쿠폰입니다") :
 	DomainException("EXPIRED", HttpStatus.CONFLICT, message)
+
+class IssuanceBusyException(message: String = "발급 요청이 몰려 지금은 접수할 수 없습니다. 잠시 후 다시 시도해 주세요") :
+	DomainException("ISSUANCE_BUSY", HttpStatus.SERVICE_UNAVAILABLE, message)
