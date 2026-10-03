@@ -26,5 +26,6 @@ class IssuanceGateProbe(
 
 	fun clear(couponId: Long) {
 		redisTemplate.delete(listOf(IssuanceGate.stockKey(couponId), IssuanceGate.usersKey(couponId)))
+		redisTemplate.delete(redisTemplate.keys(IssuanceGate.compensatedKey(couponId, "*")))
 	}
 }

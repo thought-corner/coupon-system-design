@@ -80,11 +80,26 @@ class IssuanceGateTest(
 		gate.initialize(couponId, remaining = 3, issuedUserIds = emptyList())
 		gate.tryPass(couponId, userId = 1L)
 
-		gate.restoreStock(couponId) shouldBe true
+		gate.restoreStock(couponId, messageId = "m-1") shouldBe true
 
 		assertSoftly {
 			probe.stock(couponId) shouldBe "3"
 			probe.isMember(couponId, 1L) shouldBe true
+		}
+	}
+
+	test("같은 messageId 로 재고를 다시 되돌리면 한 번만 반영되고, 다른 messageId 는 따로 반영된다") {
+		gate.initialize(couponId, remaining = 3, issuedUserIds = emptyList())
+
+		val first = gate.restoreStock(couponId, messageId = "m-1")
+		val again = gate.restoreStock(couponId, messageId = "m-1")
+		val other = gate.restoreStock(couponId, messageId = "m-2")
+
+		assertSoftly {
+			first shouldBe true
+			again shouldBe false
+			other shouldBe true
+			probe.stock(couponId) shouldBe "5"
 		}
 	}
 
@@ -106,7 +121,7 @@ class IssuanceGateTest(
 
 		assertSoftly {
 			gate.release(couponId, userId = 1L) shouldBe false
-			gate.restoreStock(couponId) shouldBe false
+			gate.restoreStock(couponId, messageId = "m-1") shouldBe false
 			gate.markSoldOut(couponId, userId = 1L) shouldBe false
 			probe.stock(couponId) shouldBe null
 		}

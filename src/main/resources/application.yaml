@@ -9,13 +9,47 @@ spring:
     redis:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    admin:
+      fail-fast: true
+    consumer:
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
+        spring.json.value.default.type: com.project.coupon.application.IssuanceRequested
+        spring.json.use.type.headers: false
+        spring.json.trusted.packages: com.project.coupon.application
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
+      properties:
+        enable.idempotence: true
+        spring.json.add.type.headers: false
+        max.block.ms: 2000
+        request.timeout.ms: 3000
+        delivery.timeout.ms: 5000
   jpa:
     hibernate:
       ddl-auto: update
     open-in-view: false
+  task:
+    scheduling:
+      pool:
+        size: 3
   mvc:
     problemdetails:
       enabled: true
-  task:
-    execution:
-      mode: force
+
+coupon:
+  dead-letter:
+    replay-delay: 1m
+  alert:
+    discord:
+      webhook-url: ${DISCORD_ALERT_WEBHOOK_URL:https://discord.com/api/webhooks/1555985859692462131/bIU5ih2fLna-nUIj72Io815o2c-peIjbzatRbNAUujrLmYsWx3WWV3wTGp_qyhtpZD3K}
+  kafka:
+    issuance:
+      replicas: ${ISSUANCE_TOPIC_REPLICAS}
