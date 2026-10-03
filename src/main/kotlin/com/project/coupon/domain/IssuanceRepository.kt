@@ -7,6 +7,8 @@ import org.springframework.data.repository.query.Param
 interface IssuanceRepository : JpaRepository<Issuance, Long> {
 	fun existsByUserIdAndCouponId(userId: Long, couponId: Long): Boolean
 
+	fun findByUserIdAndCouponId(userId: Long, couponId: Long): Issuance?
+
 	@Query("select i.userId from Issuance i where i.couponId = :couponId")
 	fun findUserIdsByCouponId(@Param("couponId") couponId: Long): List<Long>
 }

@@ -20,24 +20,25 @@ class IssuanceWriter(
 ) {
 
 	@Transactional
-	fun write(couponId: Long, userId: Long): Issuance {
-		val coupon = couponRepository.getCoupon(couponId)
-		val issuance = insertIssuance(userId, couponId, coupon.validityDays)
-		if (couponRepository.increaseIssuedQuantityIfAvailable(couponId) == 0) {
+	fun write(event: IssuanceRequested): Issuance {
+		val coupon = couponRepository.getCoupon(event.couponId)
+		val issuance = insertIssuance(event, coupon.validityDays)
+		if (couponRepository.increaseIssuedQuantityIfAvailable(event.couponId) == 0) {
 			throw SoldOutException()
 		}
 		return issuance
 	}
 
-	private fun insertIssuance(userId: Long, couponId: Long, validityDays: Int): Issuance {
+	private fun insertIssuance(event: IssuanceRequested, validityDays: Int): Issuance {
 		val now = LocalDateTime.now(clock)
 		return try {
 			issuanceRepository.save(
 				Issuance(
-					userId = userId,
-					couponId = couponId,
+					userId = event.userId,
+					couponId = event.couponId,
 					issuedAt = now,
 					expiresAt = now.plusDays(validityDays.toLong()),
+					messageId = event.messageId,
 				)
 			)
 		} catch (e: DataIntegrityViolationException) {

@@ -1,5 +1,6 @@
 package com.project.coupon.application
 
+import com.project.coupon.support.KafkaConfig
 import org.springframework.core.io.ClassPathResource
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.script.RedisScript
@@ -30,8 +31,12 @@ class IssuanceGate(
 	fun release(couponId: Long, userId: Long): Boolean =
 		run(releaseScript, couponId, userId.toString()) == APPLIED
 
-	fun restoreStock(couponId: Long): Boolean =
-		run(restoreStockScript, couponId) == APPLIED
+	fun restoreStock(couponId: Long, messageId: String): Boolean =
+		redisTemplate.execute(
+			restoreStockScript,
+			keys(couponId) + compensatedKey(couponId, messageId),
+			COMPENSATION_MARK_TTL_SECONDS.toString(),
+		) == APPLIED
 
 	fun markSoldOut(couponId: Long, userId: Long): Boolean =
 		run(markSoldOutScript, couponId, userId.toString()) == APPLIED
@@ -48,8 +53,10 @@ class IssuanceGate(
 
 	companion object {
 		private const val APPLIED = 1L
+		private const val COMPENSATION_MARK_TTL_SECONDS = KafkaConfig.ISSUANCE_RETENTION_MILLIS * 2 / 1000
 
 		fun stockKey(couponId: Long) = "coupon:{$couponId}:stock"
 		fun usersKey(couponId: Long) = "coupon:{$couponId}:users"
+		fun compensatedKey(couponId: Long, messageId: String) = "coupon:{$couponId}:compensated:$messageId"
 	}
 }

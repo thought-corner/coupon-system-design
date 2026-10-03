@@ -49,6 +49,9 @@ class Issuance(
 	@Column(name = "used_at")
 	var usedAt: LocalDateTime? = null,
 
+	@Column(name = "message_id", length = 36)
+	var messageId: String? = null,
+
 	@Id
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	var id: Long? = null,
