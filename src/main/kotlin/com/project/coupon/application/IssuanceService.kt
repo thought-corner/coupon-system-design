@@ -16,8 +16,8 @@ class IssuanceService(
 
 	@Transactional
 	fun use(issuanceId: Long, userId: Long): Issuance {
-		val issuance = issuanceRepository.findById(issuanceId)
-			.orElseThrow { IssuanceNotFoundException() }
+		val issuance = issuanceRepository.findByIdForUpdate(issuanceId)
+			?: throw IssuanceNotFoundException()
 
 		issuance.use(userId, LocalDateTime.now(clock))
 		return issuance
