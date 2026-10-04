@@ -9,8 +9,9 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
-import org.springframework.transaction.annotation.Isolation
-import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.TransactionDefinition
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.Clock
 import java.time.Duration
 import java.time.LocalDateTime
@@ -21,55 +22,83 @@ class IssuanceDeadLetterReplayer(
 	private val issuanceRepository: IssuanceRepository,
 	private val issuanceRequestPublisher: IssuanceRequestPublisher,
 	private val clock: Clock,
+	transactionManager: PlatformTransactionManager,
 	@param:Value("\${coupon.dead-letter.replay-delay}") private val replayDelay: Duration,
 ) {
+
+	private val transactionTemplate = TransactionTemplate(transactionManager).apply {
+		isolationLevel = TransactionDefinition.ISOLATION_READ_COMMITTED
+	}
 
 	private var lastFailureLoggedAt: Long? = null
 
 	@Scheduled(fixedDelay = REPLAY_INTERVAL_MILLIS)
-	@Transactional(isolation = Isolation.READ_COMMITTED)
 	fun replayDue() {
-		val now = LocalDateTime.now(clock)
-		val due = deadLetterRepository.lockDueForReplay(now.minus(replayDelay), now.minus(STALE_REPLAYING_AFTER), BATCH_SIZE)
-		for (deadLetter in due) {
-			val event = deadLetter.toEvent()
-			val next = when {
-				isAlreadyApplied(event) -> DeadLetterStatus.RESOLVED
-				deadLetter.createdAt.isBefore(now.minus(REPLAY_WINDOW)) -> DeadLetterStatus.ALERTED
-				replay(deadLetter, event) -> DeadLetterStatus.REPLAYING
-				else -> return
+		val claims = claimDue()
+		claims.forEachIndexed { index, claim ->
+			if (!replay(claim)) {
+				returnToPending(claims.drop(index))
+				return
 			}
-			deadLetter.status = next
-			deadLetter.updatedAt = now
 		}
+	}
+
+	private fun claimDue(): List<ReplayClaim> =
+		transactionTemplate.execute {
+			val now = LocalDateTime.now(clock)
+			deadLetterRepository.lockDueForReplay(now.minus(replayDelay), now.minus(STALE_REPLAYING_AFTER), BATCH_SIZE)
+				.mapNotNull { claim(it, now) }
+		}.orEmpty()
+
+	private fun claim(deadLetter: IssuanceDeadLetter, now: LocalDateTime): ReplayClaim? {
+		val event = deadLetter.toEvent()
+		deadLetter.updatedAt = now
+		deadLetter.status = when {
+			isAlreadyApplied(event) -> DeadLetterStatus.RESOLVED
+			deadLetter.createdAt.isBefore(now.minus(REPLAY_WINDOW)) -> DeadLetterStatus.ALERTED
+			else -> DeadLetterStatus.REPLAYING
+		}
+		return if (deadLetter.status == DeadLetterStatus.REPLAYING) ReplayClaim(checkNotNull(deadLetter.id), event) else null
 	}
 
 	private fun isAlreadyApplied(event: IssuanceRequested): Boolean =
 		issuanceRepository.findByUserIdAndCouponId(event.userId, event.couponId)?.messageId == event.messageId
 
-	private fun replay(deadLetter: IssuanceDeadLetter, event: IssuanceRequested): Boolean =
+	private fun replay(claim: ReplayClaim): Boolean =
 		try {
-			issuanceRequestPublisher.publishReplay(event, checkNotNull(deadLetter.id))
+			issuanceRequestPublisher.publishReplay(claim.event, claim.deadLetterId)
 			true
 		} catch (e: Exception) {
 			if (e is InterruptedException) {
 				Thread.currentThread().interrupt()
 			}
-			logReplayFailure(deadLetter, e)
+			logReplayFailure(claim, e)
 			false
 		}
 
-	private fun logReplayFailure(deadLetter: IssuanceDeadLetter, cause: Exception) {
+	private fun returnToPending(unsent: List<ReplayClaim>) {
+		runCatching {
+			transactionTemplate.executeWithoutResult {
+				deadLetterRepository.returnToPendingReplay(unsent.map { it.deadLetterId }, LocalDateTime.now(clock))
+			}
+		}.onFailure {
+			log.error("DLT 재처리 되돌리기 실패 — 재처리 중으로 남아 회수를 기다림 deadLetterIds={}", unsent.map { claim -> claim.deadLetterId }, it)
+		}
+	}
+
+	private fun logReplayFailure(claim: ReplayClaim, cause: Exception) {
 		val now = clock.millis()
 		val last = lastFailureLoggedAt
 		if (last == null || now - last >= FAILURE_LOG_INTERVAL_MILLIS) {
 			lastFailureLoggedAt = now
-			log.warn("DLT 재처리 발행 실패 — 다음 주기에 다시 시도 deadLetterId={} messageId={}", deadLetter.id, deadLetter.messageId, cause)
+			log.warn("DLT 재처리 발행 실패 — 다음 주기에 다시 시도 deadLetterId={} messageId={}", claim.deadLetterId, claim.event.messageId, cause)
 		}
 	}
 
 	private fun IssuanceDeadLetter.toEvent() =
 		IssuanceRequested(checkNotNull(messageId), checkNotNull(couponId), checkNotNull(userId))
+
+	private class ReplayClaim(val deadLetterId: Long, val event: IssuanceRequested)
 
 	companion object {
 		private val log = LoggerFactory.getLogger(IssuanceDeadLetterReplayer::class.java)
