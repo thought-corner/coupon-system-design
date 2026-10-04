@@ -52,13 +52,21 @@ class IssuanceDeadLetterReplayer(
 
 	private fun claim(deadLetter: IssuanceDeadLetter, now: LocalDateTime): ReplayClaim? {
 		val event = deadLetter.toEvent()
+		val newAttempt = deadLetter.status == DeadLetterStatus.PENDING_REPLAY
 		deadLetter.updatedAt = now
 		deadLetter.status = when {
 			isAlreadyApplied(event) -> DeadLetterStatus.RESOLVED
+			deadLetter.replayFailures >= IssuanceDeadLetterRecorder.MAX_REPLAY_ATTEMPTS -> DeadLetterStatus.ALERTED
 			deadLetter.createdAt.isBefore(now.minus(REPLAY_WINDOW)) -> DeadLetterStatus.ALERTED
 			else -> DeadLetterStatus.REPLAYING
 		}
-		return if (deadLetter.status == DeadLetterStatus.REPLAYING) ReplayClaim(checkNotNull(deadLetter.id), event) else null
+		if (deadLetter.status != DeadLetterStatus.REPLAYING) {
+			return null
+		}
+		if (newAttempt) {
+			deadLetter.replayAttempts++
+		}
+		return ReplayClaim(checkNotNull(deadLetter.id), deadLetter.replayAttempts, event)
 	}
 
 	private fun isAlreadyApplied(event: IssuanceRequested): Boolean =
@@ -66,7 +74,7 @@ class IssuanceDeadLetterReplayer(
 
 	private fun replay(claim: ReplayClaim): Boolean =
 		try {
-			issuanceRequestPublisher.publishReplay(claim.event, claim.deadLetterId)
+			issuanceRequestPublisher.publishReplay(claim.event, claim.deadLetterId, claim.attempt)
 			true
 		} catch (e: Exception) {
 			if (e is InterruptedException) {
@@ -98,7 +106,7 @@ class IssuanceDeadLetterReplayer(
 	private fun IssuanceDeadLetter.toEvent() =
 		IssuanceRequested(checkNotNull(messageId), checkNotNull(couponId), checkNotNull(userId))
 
-	private class ReplayClaim(val deadLetterId: Long, val event: IssuanceRequested)
+	private class ReplayClaim(val deadLetterId: Long, val attempt: Int, val event: IssuanceRequested)
 
 	companion object {
 		private val log = LoggerFactory.getLogger(IssuanceDeadLetterReplayer::class.java)

@@ -46,14 +46,27 @@ class IssuanceDeadLetterRecorderTest(
 		alerter.messages.clear()
 	}
 
-	fun sendToDeadLetter(value: Any?, key: String) {
+	fun sendToDeadLetter(value: Any?, key: String, replayAttempt: Int? = null) {
 		val record = ProducerRecord<Any?, Any?>(KafkaConfig.ISSUANCE_REQUESTED_DLT, key, value).apply {
 			headers().add(KafkaHeaders.DLT_EXCEPTION_FQCN, "org.springframework.dao.DataAccessResourceFailureException".toByteArray())
 			headers().add(KafkaHeaders.DLT_EXCEPTION_MESSAGE, "DB 연결 실패".toByteArray())
+			replayAttempt?.let { headers().add(KafkaConfig.REPLAY_ATTEMPT_HEADER, it.toString().toByteArray()) }
 		}
 		// 값이 없는 레코드도 보내야 해서 널을 허용하는 레코드를 그대로 넘긴다
 		@Suppress("UNCHECKED_CAST")
 		kafkaTemplate.send(record as ProducerRecord<Any, Any>).get(10, TimeUnit.SECONDS)
+	}
+
+	// 고정 시계라 재처리 작업이 돌지 않으므로, 재처리 작업이 n 번째 재처리를 시작한 상태를 직접 만든다
+	fun startReplay(messageId: String, attempt: Int) {
+		val deadLetter = deadLetterRepository.findByMessageId(messageId).shouldNotBeNull()
+		deadLetter.status = DeadLetterStatus.REPLAYING
+		deadLetter.replayAttempts = attempt
+		deadLetterRepository.save(deadLetter)
+	}
+
+	suspend fun awaitStatus(messageId: String, status: DeadLetterStatus) {
+		eventually(10.seconds) { deadLetterRepository.findByMessageId(messageId).shouldNotBeNull().status shouldBe status }
 	}
 
 	test("처음 DLT 로 온 발급 요청은 재처리 대기로 기록되고 알림은 보내지 않는다") {
@@ -72,28 +85,66 @@ class IssuanceDeadLetterRecorderTest(
 		}
 	}
 
-	test("같은 메시지가 재처리 한도만큼 다시 DLT 로 돌아오면 알림 상태가 되어 한 번만 알리고, 그 뒤에 또 와도 다시 알리지 않는다") {
+	test("재처리가 한도만큼 실패하면 알림 상태가 되어 한 번만 알리고, 그 뒤에 늦은 사본이 와도 다시 알리지 않는다") {
 		val messageId = UUID.randomUUID().toString()
 		val event = IssuanceRequested(messageId, couponId = 8L, userId = 1L)
+		sendToDeadLetter(event, key = "8")
+		awaitStatus(messageId, DeadLetterStatus.PENDING_REPLAY)
 
-		repeat(IssuanceDeadLetterRecorder.MAX_REPLAY_ATTEMPTS + 1) { sendToDeadLetter(event, key = "8") }
+		(1..IssuanceDeadLetterRecorder.MAX_REPLAY_ATTEMPTS).forEach { attempt ->
+			startReplay(messageId, attempt)
+			sendToDeadLetter(event, key = "8", replayAttempt = attempt)
+			val expected = if (attempt < IssuanceDeadLetterRecorder.MAX_REPLAY_ATTEMPTS) DeadLetterStatus.PENDING_REPLAY else DeadLetterStatus.ALERTED
+			awaitStatus(messageId, expected)
+		}
 
 		eventually(30.seconds) {
 			assertSoftly {
-				deadLetterRepository.findByMessageId(messageId).shouldNotBeNull().status shouldBe DeadLetterStatus.ALERTED
 				alerter.messages shouldHaveSize 1
 				deadLetterRepository.findByMessageId(messageId).shouldNotBeNull().alertedAt.shouldNotBeNull()
 			}
 		}
 		alerter.messages.single() shouldContain messageId
 
-		sendToDeadLetter(event, key = "8")
+		sendToDeadLetter(event, key = "8", replayAttempt = IssuanceDeadLetterRecorder.MAX_REPLAY_ATTEMPTS)
 
 		eventually(10.seconds) {
 			deadLetterRepository.findByMessageId(messageId).shouldNotBeNull().deadLetterCount shouldBe
 				IssuanceDeadLetterRecorder.MAX_REPLAY_ATTEMPTS + 2
 		}
 		alerter.messages shouldHaveSize 1
+	}
+
+	// 10분 회수로 같은 재처리의 사본이 두 개 나가 둘 다 돌아오는 상황 — 늦은 사본을 다음 재처리의 실패로 세면 한도에 일찍 닿는다
+	test("이전 재처리의 늦은 사본이나 원본의 중복 도착은 도착 횟수만 늘리고, 진행 중인 재처리의 상태와 실패 횟수는 바꾸지 않는다") {
+		val messageId = UUID.randomUUID().toString()
+		val event = IssuanceRequested(messageId, couponId = 13L, userId = 1L)
+		sendToDeadLetter(event, key = "13")
+		awaitStatus(messageId, DeadLetterStatus.PENDING_REPLAY)
+		startReplay(messageId, attempt = 1)
+		sendToDeadLetter(event, key = "13", replayAttempt = 1)
+		awaitStatus(messageId, DeadLetterStatus.PENDING_REPLAY)
+		startReplay(messageId, attempt = 2)
+
+		sendToDeadLetter(event, key = "13", replayAttempt = 1)
+		sendToDeadLetter(event, key = "13")
+
+		eventually(10.seconds) { deadLetterRepository.findByMessageId(messageId).shouldNotBeNull().deadLetterCount shouldBe 4 }
+		val deadLetter = deadLetterRepository.findByMessageId(messageId).shouldNotBeNull()
+		assertSoftly {
+			deadLetter.status shouldBe DeadLetterStatus.REPLAYING
+			deadLetter.replayAttempts shouldBe 2
+			deadLetter.replayFailures shouldBe 1
+		}
+
+		sendToDeadLetter(event, key = "13", replayAttempt = 2)
+
+		awaitStatus(messageId, DeadLetterStatus.PENDING_REPLAY)
+		val afterSecondFailure = deadLetterRepository.findByMessageId(messageId).shouldNotBeNull()
+		assertSoftly {
+			afterSecondFailure.deadLetterCount shouldBe 5
+			afterSecondFailure.replayFailures shouldBe 2
+		}
 	}
 
 	test("발급 요청으로 읽을 수 없는 메시지는 읽을 수 없음으로 기록하고 바로 알림을 보낸다") {

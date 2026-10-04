@@ -102,12 +102,13 @@ class KafkaConfig(
 		const val ISSUANCE_DEAD_LETTER_GROUP = "coupon-issuance-dead-letter"
 		const val DEAD_LETTER_CONTAINER_FACTORY = "deadLetterListenerContainerFactory"
 		const val REPLAY_HEADER = "coupon-dead-letter-replay"
+		const val REPLAY_ATTEMPT_HEADER = "coupon-dead-letter-replay-attempt"
 		private const val DEAD_LETTER_RETRY_INITIAL_MILLIS = 5_000L
 		private const val DEAD_LETTER_RETRY_MULTIPLIER = 2.0
 		private const val DEAD_LETTER_RETRY_MAX_INTERVAL_MILLIS = 60_000L
 		private const val DEAD_LETTER_RETRY_MAX_ELAPSED_MILLIS = 30L * 60 * 1000
 		const val ISSUANCE_RETENTION_MILLIS = 7L * 24 * 60 * 60 * 1000
-		private const val ISSUANCE_PARTITIONS = 3
+		const val ISSUANCE_PARTITIONS = 3
 		private const val RETRY_INTERVAL_MILLIS = 1_000L
 		private const val RETRY_ATTEMPTS = 3L
 	}
