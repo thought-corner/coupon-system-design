@@ -15,8 +15,13 @@ class IssuanceRequestPublisher(
 		send(record(event))
 	}
 
-	fun publishReplay(event: IssuanceRequested, deadLetterId: Long) {
-		send(record(event).apply { headers().add(KafkaConfig.REPLAY_HEADER, deadLetterId.toString().toByteArray()) })
+	fun publishReplay(event: IssuanceRequested, deadLetterId: Long, attempt: Int) {
+		send(
+			record(event).apply {
+				headers().add(KafkaConfig.REPLAY_HEADER, deadLetterId.toString().toByteArray())
+				headers().add(KafkaConfig.REPLAY_ATTEMPT_HEADER, attempt.toString().toByteArray())
+			}
+		)
 	}
 
 	private fun record(event: IssuanceRequested) =

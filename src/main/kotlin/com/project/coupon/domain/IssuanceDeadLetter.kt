@@ -44,6 +44,12 @@ class IssuanceDeadLetter(
 	@Column(name = "dead_letter_count", nullable = false)
 	var deadLetterCount: Int,
 
+	@Column(name = "replay_attempts", nullable = false)
+	var replayAttempts: Int = 0,
+
+	@Column(name = "replay_failures", nullable = false)
+	var replayFailures: Int = 0,
+
 	@Column(name = "created_at", nullable = false, updatable = false)
 	var createdAt: LocalDateTime,
 

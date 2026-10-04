@@ -32,6 +32,9 @@ class IssuanceDeadLetterArrival(
 	@Column(name = "payload_hash", nullable = false, length = 64)
 	var payloadHash: String,
 
+	@Column(name = "replay_attempt", nullable = false)
+	var replayAttempt: Int,
+
 	@Column(name = "arrived_at", nullable = false, updatable = false)
 	var arrivedAt: LocalDateTime,
 

@@ -33,7 +33,7 @@ class IssuanceDeadLetterAlertSender(
 		private const val BATCH_SIZE = 20
 
 		fun describe(deadLetter: IssuanceDeadLetter): String {
-			val failedReplays = deadLetter.deadLetterCount - 1
+			val failedReplays = deadLetter.replayFailures
 			return when {
 				deadLetter.status == DeadLetterStatus.UNREADABLE ->
 					"[쿠폰 발급 DLT] 읽을 수 없는 메시지 — 재처리 불가, 확인 필요. " +

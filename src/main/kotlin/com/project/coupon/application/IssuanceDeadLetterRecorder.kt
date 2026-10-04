@@ -28,11 +28,11 @@ class IssuanceDeadLetterRecorder(
 			return
 		}
 		val event = readableEvent(arrival.payload)
+		val returned = event?.let { deadLetterRepository.findByMessageIdForUpdate(it.messageId) }
 		val deadLetter = when {
 			event == null -> saveNew(arrival, null, DeadLetterStatus.UNREADABLE)
-			else -> deadLetterRepository.findByMessageIdForUpdate(event.messageId)
-				?.also { countReturn(it, arrival) }
-				?: saveNew(arrival, event, DeadLetterStatus.PENDING_REPLAY)
+			returned != null -> returned
+			else -> saveNew(arrival, event, DeadLetterStatus.PENDING_REPLAY)
 		}
 		arrivalRepository.save(
 			IssuanceDeadLetterArrival(
@@ -40,9 +40,11 @@ class IssuanceDeadLetterRecorder(
 				partition = arrival.partition,
 				offset = arrival.offset,
 				payloadHash = payloadHash,
+				replayAttempt = arrival.replayAttempt,
 				arrivedAt = LocalDateTime.now(clock),
 			)
 		)
+		returned?.let { countReturn(it, arrival) }
 	}
 
 	@Transactional
@@ -81,20 +83,26 @@ class IssuanceDeadLetterRecorder(
 		deadLetter.deadLetterCount++
 		deadLetter.failureType = arrival.failureType()
 		deadLetter.failureReason = arrival.failureReason()
+		deadLetter.replayFailures = arrivalRepository.countFailedReplays(checkNotNull(deadLetter.id)).toInt()
+		val next = nextStatus(deadLetter, arrival) ?: return
+		deadLetter.status = next
 		deadLetter.updatedAt = LocalDateTime.now(clock)
-		if (deadLetter.status !in REPLAYABLE) {
-			return
-		}
-		deadLetter.status = if (deadLetter.deadLetterCount - 1 >= MAX_REPLAY_ATTEMPTS) {
-			DeadLetterStatus.ALERTED
-		} else {
-			DeadLetterStatus.PENDING_REPLAY
+	}
+
+	private fun nextStatus(deadLetter: IssuanceDeadLetter, arrival: DeadLetterArrival): DeadLetterStatus? {
+		val reachedLimit = deadLetter.replayFailures >= MAX_REPLAY_ATTEMPTS
+		val currentReplayFailed = deadLetter.status == DeadLetterStatus.REPLAYING &&
+			arrival.replayAttempt == deadLetter.replayAttempts
+		return when {
+			deadLetter.status == DeadLetterStatus.PENDING_REPLAY && reachedLimit -> DeadLetterStatus.ALERTED
+			currentReplayFailed && reachedLimit -> DeadLetterStatus.ALERTED
+			currentReplayFailed -> DeadLetterStatus.PENDING_REPLAY
+			else -> null
 		}
 	}
 
 	companion object {
 		const val MAX_REPLAY_ATTEMPTS = 3
-		private val REPLAYABLE = setOf(DeadLetterStatus.PENDING_REPLAY, DeadLetterStatus.REPLAYING)
 		private val MESSAGE_ID_PATTERN = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 	}
 }
@@ -106,6 +114,7 @@ class DeadLetterArrival(
 	val offset: Long,
 	val exceptionClass: String?,
 	val exceptionMessage: String?,
+	val replayAttempt: Int = 0,
 ) {
 	fun payloadHash(): String =
 		HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload ?: ByteArray(0)))

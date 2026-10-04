@@ -26,6 +26,7 @@ class IssuanceDeadLetterConsumer(
 				offset = record.offset(),
 				exceptionClass = record.failureClass(),
 				exceptionMessage = record.header(KafkaHeaders.DLT_EXCEPTION_MESSAGE),
+				replayAttempt = record.header(KafkaConfig.REPLAY_ATTEMPT_HEADER)?.toIntOrNull() ?: 0,
 			)
 		)
 	}
