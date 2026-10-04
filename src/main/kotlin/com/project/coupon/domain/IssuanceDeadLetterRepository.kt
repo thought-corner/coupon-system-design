@@ -36,6 +36,13 @@ interface IssuanceDeadLetterRepository : JpaRepository<IssuanceDeadLetter, Long>
 
 	@Modifying
 	@Query(
+		"update IssuanceDeadLetter d set d.status = com.project.coupon.domain.DeadLetterStatus.PENDING_REPLAY, d.updatedAt = :now " +
+			"where d.id in :ids and d.status = com.project.coupon.domain.DeadLetterStatus.REPLAYING",
+	)
+	fun returnToPendingReplay(@Param("ids") ids: Collection<Long>, @Param("now") now: LocalDateTime): Int
+
+	@Modifying
+	@Query(
 		"update IssuanceDeadLetter d set d.status = com.project.coupon.domain.DeadLetterStatus.RESOLVED, d.updatedAt = :now " +
 			"where d.messageId = :messageId and d.status = com.project.coupon.domain.DeadLetterStatus.REPLAYING",
 	)

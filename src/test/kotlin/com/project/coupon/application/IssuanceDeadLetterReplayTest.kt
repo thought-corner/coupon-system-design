@@ -24,9 +24,12 @@ import org.springframework.context.annotation.Import
 import org.springframework.context.annotation.Primary
 import org.springframework.dao.DataAccessResourceFailureException
 import org.springframework.data.redis.core.StringRedisTemplate
+import org.springframework.kafka.core.KafkaTemplate
 import java.time.Clock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
 
 // DB 쓰기를 일부러 실패시켜 컨슈머 재시도 → DLT → 기록 → 자동 재처리까지 실제 흐름으로 본다
@@ -45,6 +48,7 @@ class IssuanceDeadLetterReplayTest(
 	private val arrivalRepository: IssuanceDeadLetterArrivalRepository,
 	private val writer: FailingIssuanceWriter,
 	private val alerter: RecordingDeadLetterAlerter,
+	private val publisher: HoldingReplayPublisher,
 	redisTemplate: StringRedisTemplate,
 ) : FunSpec({
 
@@ -56,6 +60,7 @@ class IssuanceDeadLetterReplayTest(
 		issuanceRepository.deleteAll()
 		couponRepository.deleteAll()
 		alerter.messages.clear()
+		publisher.release()
 	}
 
 	fun saveCoupon(totalQuantity: Int): Long =
@@ -82,6 +87,25 @@ class IssuanceDeadLetterReplayTest(
 			couponRepository.findById(couponId).get().issuedQuantity shouldBe 1
 			probe.stock(couponId) shouldBe "2"
 			alerter.messages.size shouldBe 0
+		}
+	}
+
+	// 재처리 발행 직후 재처리 작업이 (뒤 건 발행이 느려) 아직 끝나지 않은 상황 — 그동안 컨슈머가 결과 기록에서 멈추면 그 행사의 반영 전체가 밀린다
+	test("재처리 작업이 발행 뒤 아직 끝나지 않았어도 컨슈머는 기다리지 않고 재처리 결과를 기록한다") {
+		val couponId = saveCoupon(totalQuantity = 3)
+		writer.failNext(couponId, times = 4)
+		publisher.holdAfterReplay()
+
+		couponService.issue(couponId, userId = 1L)
+
+		val deadLetter = eventually(30.seconds) {
+			deadLetterRepository.findAll().single { it.couponId == couponId }
+				.also { it.status shouldBe DeadLetterStatus.RESOLVED }
+		}
+		assertSoftly {
+			publisher.isHolding() shouldBe true
+			deadLetter.deadLetterCount shouldBe 1
+			issuanceRepository.count() shouldBe 1
 		}
 	}
 
@@ -148,6 +172,48 @@ class IssuanceDeadLetterReplayTest(
 		@Bean
 		@Primary
 		fun recordingDeadLetterAlerter() = RecordingDeadLetterAlerter()
+
+		@Bean
+		@Primary
+		fun holdingReplayPublisher(kafkaTemplate: KafkaTemplate<String, IssuanceRequested>) = HoldingReplayPublisher(kafkaTemplate)
+	}
+}
+
+// 재처리 발행을 보낸 뒤 풀어 줄 때까지 돌아오지 않는다 — 재처리 작업이 배치의 뒤 건을 느리게 발행하는 중인 상황을 만든다
+open class HoldingReplayPublisher(
+	kafkaTemplate: KafkaTemplate<String, IssuanceRequested>,
+) : IssuanceRequestPublisher(kafkaTemplate) {
+
+	@Volatile
+	private var gate: CountDownLatch? = null
+
+	@Volatile
+	private var holding = false
+
+	fun holdAfterReplay() {
+		gate = CountDownLatch(1)
+	}
+
+	fun isHolding(): Boolean = holding
+
+	fun release() {
+		gate?.countDown()
+		gate = null
+	}
+
+	override fun publishReplay(event: IssuanceRequested, deadLetterId: Long) {
+		super.publishReplay(event, deadLetterId)
+		val current = gate ?: return
+		holding = true
+		try {
+			current.await(HOLD_SECONDS, TimeUnit.SECONDS)
+		} finally {
+			holding = false
+		}
+	}
+
+	companion object {
+		private const val HOLD_SECONDS = 40L
 	}
 }
 
